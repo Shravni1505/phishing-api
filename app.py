@@ -1,7 +1,5 @@
 from flask import Flask, request, jsonify
-import pickle, os, datetime
-import firebase_admin
-from firebase_admin import credentials, firestore
+import pickle, os, datetime, json
 
 app = Flask(__name__)
 
@@ -9,12 +7,22 @@ app = Flask(__name__)
 with open("model.pkl", "rb") as f:
     model = pickle.load(f)
 
-# Initialize Firebase (for Firestore logging)
-if not firebase_admin._apps:
-    cred = credentials.Certificate("firebase-key.json")
-    firebase_admin.initialize_app(cred)
-
-db = firestore.client()
+# Initialize Firebase safely
+db = None
+try:
+    import firebase_admin
+    from firebase_admin import credentials, firestore
+    if not firebase_admin._apps:
+        key_json = os.environ.get("FIREBASE_KEY")
+        if key_json:
+            cred = credentials.Certificate(json.loads(key_json))
+            firebase_admin.initialize_app(cred)
+            db = firestore.client()
+            print("Firebase connected successfully!")
+        else:
+            print("WARNING: FIREBASE_KEY not set. Logging disabled.")
+except Exception as e:
+    print(f"Firebase init failed: {e}")
 
 @app.route("/", methods=["GET"])
 def home():
@@ -39,18 +47,19 @@ def detect():
     label = "phishing" if pred == 1 else "safe"
     conf  = round(float(proba[pred]), 4)
 
-    # Log to Firestore
+    # Log to Firestore if available
     log_id = None
-    try:
-        doc = db.collection("phishing_logs").add({
-            "text":       text,
-            "label":      label,
-            "confidence": conf,
-            "timestamp":  datetime.datetime.utcnow().isoformat()
-        })
-        log_id = doc[1].id
-    except Exception as e:
-        print(f"Firestore log failed: {e}")
+    if db:
+        try:
+            doc = db.collection("phishing_logs").add({
+                "text":       text,
+                "label":      label,
+                "confidence": conf,
+                "timestamp":  datetime.datetime.utcnow().isoformat()
+            })
+            log_id = doc[1].id
+        except Exception as e:
+            print(f"Firestore log failed: {e}")
 
     resp = jsonify({
         "label":      label,
